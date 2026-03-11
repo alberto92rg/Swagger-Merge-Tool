@@ -2,7 +2,7 @@
 
 Swagger Merge Tool è un'applicazione desktop che permette di **unire due file Swagger 2.0 (YAML)**, analizzare le differenze tra le API e generare automaticamente uno **Swagger unificato e validato**.
 
-L'applicazione è sviluppata utilizzando **React, Vite ed Electron** e può essere eseguita sia in locale sia come **eseguibile standalone**.
+L'applicazione è sviluppata utilizzando **React, Vite ed Electron tramite strumenti di AI** e può essere eseguita sia in locale sia come **eseguibile standalone**.
 
 ---
 

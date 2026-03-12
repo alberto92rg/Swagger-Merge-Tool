@@ -33,7 +33,7 @@ Installare le dipendenze:
 
 npm install
 
-Generare la build del frontend
+# Generare la build del frontend
 
 Prima di avviare l'applicazione desktop è necessario generare la build.
 
@@ -60,7 +60,8 @@ npm run dev
 Aprire il browser:
 
 http://localhost:5173
-Avvio come applicazione desktop
+
+# Avvio come applicazione desktop
 
 Dopo aver generato la build (npm run build) è possibile avviare Electron:
 
@@ -68,7 +69,7 @@ npm run electron
 
 Questo comando apre l'applicazione desktop.
 
-Creazione eseguibile
+# Creazione eseguibile
 
 Per generare l'eseguibile Windows:
 
@@ -84,7 +85,7 @@ Esempio:
 
 Swagger Merge Tool.exe
 
-Questo eseguibile può essere distribuito ai colleghi senza installare Node.js.
+Questo eseguibile può essere distribuito senza installare Node.js.
 
 Sequenza completa per eseguire il progetto
 
@@ -99,7 +100,8 @@ npm install
 npm run build
 
 npm run electron
-Come utilizzare il tool
+
+# Come utilizzare il tool
 1️⃣ Caricare Swagger originale
 
 Nel pannello Swagger da aggiornare caricare il file YAML originale.
@@ -161,7 +163,8 @@ swagger-merge-tool
 ├── package.json
 ├── vite.config.ts
 ├── README.md
-Troubleshooting
+
+# Troubleshooting
 ERR_FILE_NOT_FOUND dist/index.html
 
 Se compare l'errore:

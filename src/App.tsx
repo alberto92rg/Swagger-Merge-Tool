@@ -30,14 +30,65 @@ type ApiChange = {
   group: "Paths" | "Definitions" | "Tags" | "Metadati";
 };
 
+type Status = "idle" | "loading" | "success" | "error";
+
+type ConvertedDocInfo = {
+  label: string;
+  detail: string;
+  kind: "swagger" | "openapi" | "json";
+};
+
 const norm = (text: string) => String(text || "").replace(/\r\n?/g, "\n");
 const parseYaml = (text: string): Record<string, any> => {
   if (!text.trim()) return {};
   return (YAML.parse(text) || {}) as Record<string, any>;
 };
+const parseJson = (text: string): unknown => {
+  if (!text.trim()) return {};
+  return JSON.parse(text);
+};
 const toYaml = (obj: unknown) => YAML.stringify(obj ?? {});
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v ?? null));
 const arr = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
+const createYamlFilename = (name: string, fallback: string) => {
+  const safeName = name.trim();
+  if (!safeName) return fallback;
+  if (/\.json$/i.test(safeName)) return safeName.replace(/\.json$/i, ".yaml");
+  if (/\.ya?ml$/i.test(safeName)) return safeName;
+  return `${safeName}.yaml`;
+};
+
+function describeConvertedDocument(doc: unknown): ConvertedDocInfo {
+  const fallback: ConvertedDocInfo = {
+    label: "JSON convertito",
+    detail: "Il contenuto è stato trasformato in YAML e può essere caricato nei pannelli sottostanti.",
+    kind: "json",
+  };
+
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return fallback;
+
+  const record = doc as Record<string, any>;
+  const titleSuffix = typeof record.info?.title === "string" ? ` · ${record.info.title}` : "";
+
+  if (record.swagger === "2.0") {
+    return {
+      label: `Swagger 2.0 rilevato${titleSuffix}`,
+      detail: "La specifica è pronta per essere letta e usata direttamente come Swagger base o Swagger aggiornato.",
+      kind: "swagger",
+    };
+  }
+
+  if (typeof record.openapi === "string") {
+    return {
+      label: `OpenAPI ${record.openapi} rilevato${titleSuffix}`,
+      detail: "La conversione JSON → YAML è riuscita. Il flusso attuale del merge resta compatibile con il comportamento già presente nel tool.",
+      kind: "openapi",
+    };
+  }
+
+  return fallback;
+}
 
 function deepMerge(a: Record<string, any>, b: Record<string, any>) {
   const out = clone(a || {});
@@ -204,6 +255,9 @@ function FileDrop({
   onLoad,
   color,
   icon,
+  accept = ".yaml,.yml,text/yaml,text/x-yaml",
+  badgeLabel = "YAML",
+  emptyLabel,
 }: {
   title: string;
   subtitle: string;
@@ -211,6 +265,9 @@ function FileDrop({
   onLoad: (name: string, text: string) => void;
   color: string;
   icon: React.ReactNode;
+  accept?: string;
+  badgeLabel?: string;
+  emptyLabel?: string;
 }) {
   const [over, setOver] = useState(false);
   const pick = async (file?: File) => {
@@ -242,16 +299,16 @@ function FileDrop({
       <label className="block cursor-pointer rounded-xl bg-white/60 px-3 py-2 text-sm text-muted-foreground">
         <input
           type="file"
-          accept=".yaml,.yml,text/yaml,text/x-yaml"
+          accept={accept}
           className="hidden"
           onChange={(e) => void pick(e.target.files?.[0] || undefined)}
         />
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 truncate">
             <Inbox className="h-4 w-4 shrink-0" />
-            <span className="truncate">{filename || "Trascina qui il file YAML o clicca per caricarlo"}</span>
+            <span className="truncate">{filename || emptyLabel || `Trascina qui il file ${badgeLabel} o clicca per caricarlo`}</span>
           </div>
-          <Badge variant="secondary">YAML</Badge>
+          <Badge variant="secondary">{badgeLabel}</Badge>
         </div>
       </label>
     </div>
@@ -262,20 +319,32 @@ export default function SwaggerMergeUI() {
   const oldRef = useRef<HTMLDivElement | null>(null);
   const newRef = useRef<HTMLDivElement | null>(null);
   const syncing = useRef(false);
+
   const [oldName, setOldName] = useState("");
   const [newName, setNewName] = useState("");
   const [oldText, setOldText] = useState("");
   const [newText, setNewText] = useState("");
   const [mergedText, setMergedText] = useState("");
-  const [message, setMessage] = useState("Incolla, carica o trascina i due YAML per confrontarli.");
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [message, setMessage] = useState("Incolla, carica o trascina due YAML. In alternativa converti un JSON in YAML e usalo nel merge.");
+  const [status, setStatus] = useState<Status>("idle");
   const [validation, setValidation] = useState<{ valid: boolean; message: string } | null>(null);
   const [apiChanges, setApiChanges] = useState<ApiChange[]>([]);
+
+  const [jsonName, setJsonName] = useState("");
+  const [jsonText, setJsonText] = useState("");
+  const [jsonYaml, setJsonYaml] = useState("");
+  const [jsonStatus, setJsonStatus] = useState<Status>("idle");
+  const [jsonMessage, setJsonMessage] = useState("Incolla o carica un JSON: verrà convertito in YAML e potrai usarlo come input del merge.");
+  const [jsonInfo, setJsonInfo] = useState<ConvertedDocInfo | null>(null);
 
   const diffRows = useMemo(() => alignedDiff(oldText, mergedText || newText), [oldText, mergedText, newText]);
   const stats = useMemo(() => countChanges(diffRows), [diffRows]);
   const report = useMemo(() => buildReport(apiChanges, oldName, newName), [apiChanges, oldName, newName]);
-  const canMerge = oldText.trim() && newText.trim();
+  const canMerge = Boolean(oldText.trim() && newText.trim());
+  const convertedYamlName = useMemo(
+    () => createYamlFilename(jsonName, "swagger-from-json.yaml"),
+    [jsonName]
+  );
 
   const doMerge = () => {
     try {
@@ -291,6 +360,43 @@ export default function SwaggerMergeUI() {
       setApiChanges([]);
       setStatus("error");
     }
+  };
+
+  const doConvertJson = () => {
+    try {
+      setJsonStatus("loading");
+      const parsed = parseJson(jsonText);
+      const converted = toYaml(parsed);
+      const info = describeConvertedDocument(parsed);
+      setJsonYaml(converted);
+      setJsonInfo(info);
+      setJsonStatus("success");
+      setJsonMessage("Conversione completata: YAML generato correttamente.");
+    } catch (e) {
+      setJsonStatus("error");
+      setJsonInfo(null);
+      setJsonYaml("");
+      setJsonMessage(`Errore nella conversione JSON → YAML: ${(e as Error).message}`);
+    }
+  };
+
+  const useConvertedYaml = (target: "old" | "new") => {
+    if (!jsonYaml.trim()) return;
+    const fileName = target === "old"
+      ? createYamlFilename(jsonName, "swagger-base-from-json.yaml")
+      : createYamlFilename(jsonName, "swagger-aggiornato-from-json.yaml");
+
+    if (target === "old") {
+      setOldName(fileName);
+      setOldText(jsonYaml);
+      setMessage("Lo Swagger convertito da JSON è stato caricato come file base.");
+    } else {
+      setNewName(fileName);
+      setNewText(jsonYaml);
+      setMessage("Lo Swagger convertito da JSON è stato caricato come file aggiornato.");
+    }
+
+    setStatus("success");
   };
 
   const doDownload = () => {
@@ -320,12 +426,97 @@ export default function SwaggerMergeUI() {
     <div className="min-h-screen bg-gradient-to-br from-sky-50 via-white to-violet-100 p-4 text-slate-900">
       <div className="mx-auto max-w-[1500px] space-y-4">
         <div className="rounded-3xl border border-white/60 bg-white/80 p-6 shadow-xl backdrop-blur">
-          <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-sky-100 to-violet-100 px-3 py-1 text-xs font-medium text-slate-700">
-            <Sparkles className="h-3.5 w-3.5" /> Swagger Merge & Diff
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-sky-100 to-violet-100 px-3 py-1 text-xs font-medium text-slate-700">
+              <Sparkles className="h-3.5 w-3.5" /> Swagger Merge & Diff
+            </div>
+            <Badge className="border-sky-200 bg-sky-100 text-sky-800">Versione 3.0</Badge>
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight">Swagger Merge Tool</h1>
-          <p className="mt-2 max-w-3xl text-sm text-slate-600">Unisci due Swagger 2.0, visualizza le differenze API e scarica un report Markdown.</p>
+          <h1 className="text-3xl font-semibold tracking-tight">Swagger Merge Tool 3.0</h1>
+          <p className="mt-2 max-w-4xl text-sm text-slate-600">
+            Unisci due Swagger 2.0, converti un input JSON in YAML per leggere rapidamente lo swagger ottenuto,
+            visualizza le differenze API e scarica un report Markdown.
+          </p>
         </div>
+
+        <Card className="rounded-2xl border-0 bg-white/85 shadow-lg">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-lg"><Sparkles className="h-5 w-5 text-fuchsia-600" /> Nuova feature JSON → YAML</CardTitle>
+                <p className="mt-1 text-sm text-slate-600">
+                  Incolla o carica un JSON, convertilo in YAML e usalo direttamente come Swagger base o Swagger aggiornato.
+                </p>
+              </div>
+              {jsonInfo && (
+                <Badge className={`border ${jsonInfo.kind === "swagger" ? "border-emerald-200 bg-emerald-100 text-emerald-800" : jsonInfo.kind === "openapi" ? "border-violet-200 bg-violet-100 text-violet-800" : "border-slate-200 bg-slate-100 text-slate-800"}`}>
+                  {jsonInfo.label}
+                </Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+              <div className="space-y-3">
+                <FileDrop
+                  title="Input JSON"
+                  subtitle="Swagger o documento JSON da convertire"
+                  filename={jsonName}
+                  color="border-fuchsia-300 bg-fuchsia-50/80"
+                  icon={<Upload className="h-5 w-5 text-fuchsia-600" />}
+                  accept=".json,application/json,text/json"
+                  badgeLabel="JSON"
+                  emptyLabel="Trascina qui il file JSON o clicca per caricarlo"
+                  onLoad={(n, t) => {
+                    setJsonName(n);
+                    setJsonText(t);
+                  }}
+                />
+                <Textarea
+                  value={jsonText}
+                  onChange={(e) => setJsonText(e.target.value)}
+                  placeholder="Incolla qui il JSON da convertire in YAML"
+                  className="min-h-[220px] resize-y border-fuchsia-200 bg-fuchsia-50/30 font-mono text-xs"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-3">
+                  <Button className="rounded-2xl bg-gradient-to-r from-fuchsia-600 to-violet-600 text-white" disabled={!jsonText.trim()} onClick={doConvertJson}>
+                    <Sparkles className="mr-2 h-4 w-4" /> Converti in YAML
+                  </Button>
+                  <Button variant="outline" className="rounded-2xl border-sky-200 bg-sky-50 text-sky-800" disabled={!jsonYaml.trim()} onClick={() => useConvertedYaml("old")}>
+                    <FileText className="mr-2 h-4 w-4" /> Usa come base
+                  </Button>
+                  <Button variant="outline" className="rounded-2xl border-violet-200 bg-violet-50 text-violet-800" disabled={!jsonYaml.trim()} onClick={() => useConvertedYaml("new")}>
+                    <Upload className="mr-2 h-4 w-4" /> Usa come aggiornato
+                  </Button>
+                  <Button variant="outline" className="rounded-2xl border-emerald-200 bg-emerald-50 text-emerald-800" disabled={!jsonYaml.trim()} onClick={() => download(jsonYaml, convertedYamlName, "text/yaml;charset=utf-8")}>
+                    <Download className="mr-2 h-4 w-4" /> Scarica YAML
+                  </Button>
+                </div>
+
+                <div className="flex items-start gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                  {jsonStatus === "success" ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-600" /> : <AlertCircle className="mt-0.5 h-4 w-4 text-amber-600" />}
+                  <span>{jsonMessage}</span>
+                </div>
+
+                {jsonInfo && (
+                  <div className={`rounded-2xl border p-3 text-sm ${jsonInfo.kind === "swagger" ? "border-emerald-200 bg-emerald-50" : jsonInfo.kind === "openapi" ? "border-violet-200 bg-violet-50" : "border-slate-200 bg-slate-50"}`}>
+                    {jsonInfo.detail}
+                  </div>
+                )}
+
+                <Textarea
+                  value={jsonYaml}
+                  readOnly
+                  placeholder="Qui apparirà il YAML convertito a partire dal JSON"
+                  className="min-h-[220px] resize-y border-emerald-200 bg-emerald-50/30 font-mono text-xs"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Card className="rounded-2xl border-0 bg-white/85 shadow-lg">

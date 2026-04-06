@@ -1,7 +1,7 @@
 {
   "name": "swagger-merge-tool",
   "private": true,
-  "version": "0.0.0",
+  "version": "3.0.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -53,5 +53,6 @@
     "win": {
       "target": "portable"
     }
-  }
+  },
+  "description": "Tool desktop React + Vite + Electron per merge Swagger 2.0 con conversione JSON → YAML, diff API e report Markdown"
 }

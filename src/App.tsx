@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import YAML from "yaml";
 import {
   Upload,
@@ -10,6 +10,7 @@ import {
   FileDown,
   Sparkles,
   Inbox,
+  Mail,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,9 @@ type ValidationResult = {
   message: string;
   warnings: string[];
 };
+
+// Azione messa in attesa mentre viene mostrato il promemoria del backup.
+type PendingAction = "merge" | "download" | null;
 
 // Chiavi gestite da regole esplicite: non devono ricadere nella copia
 // generica delle chiavi top-level, altrimenti un dato d'ambiente rimosso
@@ -516,6 +520,74 @@ function FileDrop({
   );
 }
 
+function BackupReminderDialog({
+  action,
+  onConfirm,
+  onDismiss,
+}: {
+  action: Exclude<PendingAction, null>;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onDismiss]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+      onClick={onDismiss}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="promemoria-backup-titolo"
+        aria-describedby="promemoria-backup-testo"
+        className="w-full max-w-lg rounded-3xl border border-white/60 bg-white p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <div className="rounded-2xl bg-amber-100 p-2.5">
+            <Mail className="h-5 w-5 text-amber-700" />
+          </div>
+          <div className="min-w-0">
+            <h2 id="promemoria-backup-titolo" className="text-lg font-semibold tracking-tight">
+              Hai mandato la mail di backup?
+            </h2>
+            <p id="promemoria-backup-testo" className="mt-2 text-sm text-slate-600">
+              Prima di {action === "merge" ? "generare il merge" : "scaricare lo swagger merged"}, ricordati di
+              inviare per email una copia di backup degli swagger con cui stai lavorando. Il tool elabora tutto
+              in locale e non conserva nulla: se chiudi l'applicazione, il contenuto non caricato da file
+              va perso.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button
+            variant="outline"
+            className="rounded-2xl border-slate-200 bg-slate-50 text-slate-800"
+            onClick={onConfirm}
+          >
+            <CheckCircle2 className="mr-2 h-4 w-4" /> Sì, già fatto!
+          </Button>
+          <Button
+            autoFocus
+            className="rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 text-white"
+            onClick={onConfirm}
+          >
+            <Mail className="mr-2 h-4 w-4" /> Ok, lo faccio subito!
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SwaggerMergeUI() {
   const oldRef = useRef<HTMLDivElement | null>(null);
   const newRef = useRef<HTMLDivElement | null>(null);
@@ -533,6 +605,7 @@ export default function SwaggerMergeUI() {
   const [mergeFormat, setMergeFormat] = useState<SpecFormat | null>(null);
   const [mergeWarnings, setMergeWarnings] = useState<string[]>([]);
   const [brokenRefs, setBrokenRefs] = useState<string[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
   const [jsonName, setJsonName] = useState("");
   const [jsonText, setJsonText] = useState("");
@@ -628,6 +701,15 @@ export default function SwaggerMergeUI() {
         ? `File scaricato, ma con avvisi: ${result.warnings.join(" ")}`
         : "File validato e scaricato correttamente."
     );
+  };
+
+  // Entrambi i pulsanti del promemoria proseguono: cambia solo la risposta
+  // dell'utente, non l'esito dell'azione messa in attesa.
+  const confirmBackupReminder = () => {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action === "merge") doMerge();
+    else if (action === "download") doDownload();
   };
 
   const sync = (source: HTMLDivElement | null, target: HTMLDivElement | null) => {
@@ -773,10 +855,10 @@ export default function SwaggerMergeUI() {
                 {validation?.valid && <Badge className="border-sky-200 bg-sky-100 text-sky-800">Validato</Badge>}
               </div>
               <div className="flex flex-wrap gap-3">
-                <Button className="rounded-2xl bg-gradient-to-r from-sky-600 to-violet-600 text-white" disabled={!canMerge || status === "loading"} onClick={doMerge}>
+                <Button className="rounded-2xl bg-gradient-to-r from-sky-600 to-violet-600 text-white" disabled={!canMerge || status === "loading"} onClick={() => setPendingAction("merge")}>
                   <Sparkles className="mr-2 h-4 w-4" /> Genera merge
                 </Button>
-                <Button variant="outline" className="rounded-2xl border-emerald-200 bg-emerald-50 text-emerald-800" disabled={!mergedText.trim()} onClick={doDownload}>
+                <Button variant="outline" className="rounded-2xl border-emerald-200 bg-emerald-50 text-emerald-800" disabled={!mergedText.trim()} onClick={() => setPendingAction("download")}>
                   <Download className="mr-2 h-4 w-4" /> Download merged swagger
                 </Button>
               </div>
@@ -892,6 +974,14 @@ export default function SwaggerMergeUI() {
           </CardContent>
         </Card>
       </div>
+
+      {pendingAction && (
+        <BackupReminderDialog
+          action={pendingAction}
+          onConfirm={confirmBackupReminder}
+          onDismiss={() => setPendingAction(null)}
+        />
+      )}
     </div>
   );
 }

@@ -219,6 +219,11 @@ Premere il pulsante:
 Genera merge
 ```
 
+Compare un promemoria che invita a inviare la mail di backup degli swagger su cui si sta
+lavorando. Entrambi i pulsanti — **Sì, già fatto!** e **Ok, lo faccio subito!** — proseguono con
+l'operazione; il tasto `Esc` o un clic fuori dalla finestra la annullano. Lo stesso promemoria
+compare al **Download merged swagger**.
+
 ### 5. Analizzare le differenze
 
 Il tool mostra:

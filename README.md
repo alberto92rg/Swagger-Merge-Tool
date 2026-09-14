@@ -1,6 +1,6 @@
 # Swagger Merge Tool 3.0
 
-Swagger Merge Tool è un'applicazione desktop che permette di **unire due file Swagger 2.0**, analizzare le differenze tra le API e generare automaticamente uno **Swagger unificato e validato**.
+Swagger Merge Tool è un'applicazione desktop che permette di **unire due specifiche API** — **Swagger 2.0** oppure **OpenAPI 3.x** — analizzare le differenze tra le API e generare automaticamente una **specifica unificata e validata**.
 
 Dalla versione **3.0** il tool introduce anche una nuova funzionalità: un pannello dedicato che consente di **incollare o caricare un JSON**, convertirlo in **YAML** e usarlo direttamente come input per l'analisi o il merge dello Swagger.
 
@@ -232,7 +232,11 @@ api-diff-report.md
 
 ## Logica di merge
 
-Il tool applica le seguenti regole di merge:
+Il formato viene riconosciuto automaticamente dal campo `swagger` o `openapi` del documento
+**base**. Se i due file dichiarano formati diversi il merge viene rifiutato con un messaggio
+esplicito, invece di produrre un documento incoerente.
+
+### Swagger 2.0
 
 | Campo | Origine |
 |---|---|
@@ -244,6 +248,34 @@ Il tool applica le seguenti regole di merge:
 | paths | merge |
 | definitions | merge |
 | parameters | merge |
+
+Le tre chiavi d'ambiente (`host`, `basePath`, `schemes`) appartengono **esclusivamente** al
+documento base: se non sono presenti nel base restano assenti nel risultato e il valore del
+documento aggiornato non viene ereditato. L'interfaccia lo segnala con un avviso.
+
+### OpenAPI 3.x
+
+| Campo | Origine |
+|---|---|
+| openapi | nuovo |
+| info | nuovo |
+| servers | vecchio |
+| paths | merge |
+| webhooks | merge |
+| components | merge per sezione (`schemas`, `responses`, `parameters`, `examples`, `requestBodies`, `headers`, `securitySchemes`, `links`, `callbacks`, `pathItems`) |
+| tags | unione per nome, prevale il nuovo |
+
+In OpenAPI 3.x i dati d'ambiente stanno in `servers`, che segue quindi la stessa regola di
+`host`/`basePath`/`schemes`: viene preso solo dal documento base.
+
+Se le due specifiche dichiarano versioni diverse (per esempio 3.0.3 e 3.1.0) il risultato
+adotta quella del documento aggiornato e l'interfaccia mostra un avviso.
+
+### Controllo dei riferimenti
+
+Dopo ogni merge il tool verifica che tutti i `$ref` interni (`#/...`) puntino a un nodo
+effettivamente presente nel documento risultante, ed elenca quelli non risolti. È il sintomo
+tipico di una path importata senza gli schemi a cui fa riferimento.
 
 ---
 

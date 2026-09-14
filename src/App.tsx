@@ -32,11 +32,36 @@ type ApiChange = {
 
 type Status = "idle" | "loading" | "success" | "error";
 
+type SpecFormat = "swagger2" | "openapi3" | "unknown";
+
 type ConvertedDocInfo = {
   label: string;
   detail: string;
   kind: "swagger" | "openapi" | "json";
 };
+
+type ValidationResult = {
+  valid: boolean;
+  message: string;
+  warnings: string[];
+};
+
+// Chiavi gestite da regole esplicite: non devono ricadere nella copia
+// generica delle chiavi top-level, altrimenti un dato d'ambiente rimosso
+// perché assente nella base rientrerebbe dal documento aggiornato.
+const SWAGGER2_HANDLED_KEYS = [
+  "swagger", "info", "basePath", "host", "schemes", "consumes", "produces",
+  "paths", "definitions", "parameters", "responses", "securityDefinitions", "tags",
+];
+
+const OPENAPI3_HANDLED_KEYS = ["openapi", "info", "servers", "paths", "webhooks", "components", "tags"];
+
+// Ordine delle sezioni di components secondo la specifica OpenAPI 3.x:
+// serve a mantenere stabile la serializzazione del merged.
+const OPENAPI3_COMPONENT_ORDER = [
+  "schemas", "responses", "parameters", "examples", "requestBodies",
+  "headers", "securitySchemes", "links", "callbacks", "pathItems",
+];
 
 const norm = (text: string) => String(text || "").replace(/\r\n?/g, "\n");
 const parseYaml = (text: string): Record<string, any> => {
@@ -80,14 +105,73 @@ function describeConvertedDocument(doc: unknown): ConvertedDocInfo {
   }
 
   if (typeof record.openapi === "string") {
+    const supported = /^3\.\d/.test(record.openapi.trim());
     return {
       label: `OpenAPI ${record.openapi} rilevato${titleSuffix}`,
-      detail: "La conversione JSON → YAML è riuscita. Il flusso attuale del merge resta compatibile con il comportamento già presente nel tool.",
+      detail: supported
+        ? "La specifica è pronta per essere usata come documento base o aggiornato. Il merge applicherà le regole OpenAPI 3.x: servers preso dal documento base e components uniti sezione per sezione."
+        : "La conversione JSON → YAML è riuscita, ma questa versione di OpenAPI non è gestita dal merge: sono supportati Swagger 2.0 e OpenAPI 3.x.",
       kind: "openapi",
     };
   }
 
   return fallback;
+}
+
+function detectFormat(doc: Record<string, any> | null | undefined): SpecFormat {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return "unknown";
+  if (doc.swagger === "2.0") return "swagger2";
+  if (typeof doc.openapi === "string" && /^3\.\d/.test(doc.openapi.trim())) return "openapi3";
+  return "unknown";
+}
+
+function describeFormat(doc: Record<string, any>, format: SpecFormat) {
+  if (format === "swagger2") return "Swagger 2.0";
+  if (format === "openapi3") return `OpenAPI ${String(doc.openapi).trim()}`;
+  return "formato non riconosciuto";
+}
+
+const isOpenApi31 = (doc: Record<string, any>) => /^3\.[1-9]/.test(String(doc?.openapi || "").trim());
+
+function pointerExists(root: any, ref: string) {
+  const segments = ref
+    .slice(2)
+    .split("/")
+    .map((s) => decodeURIComponent(s).replace(/~1/g, "/").replace(/~0/g, "~"));
+  let node = root;
+  for (const segment of segments) {
+    if (node && typeof node === "object" && segment in node) node = node[segment];
+    else return false;
+  }
+  return true;
+}
+
+// Raccoglie i $ref interni che nel documento risultante non puntano a nulla.
+// È il sintomo tipico di un merge che ha importato una path senza portarsi
+// dietro gli schemi a cui quella path fa riferimento.
+function findBrokenRefs(root: unknown): string[] {
+  const broken = new Set<string>();
+  const visited = new Set<object>();
+
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    Object.entries(node).forEach(([key, value]) => {
+      if (key === "$ref" && typeof value === "string" && value.startsWith("#/")) {
+        if (!pointerExists(root, value)) broken.add(value);
+        return;
+      }
+      walk(value);
+    });
+  };
+
+  walk(root);
+  return [...broken].sort();
 }
 
 function deepMerge(a: Record<string, any>, b: Record<string, any>) {
@@ -102,9 +186,20 @@ function deepMerge(a: Record<string, any>, b: Record<string, any>) {
   return out;
 }
 
-function mergeSwagger(oldText: string, newText: string) {
-  const oldDoc = parseYaml(oldText);
-  const newDoc = parseYaml(newText);
+function mergeTags(oldDoc: Record<string, any>, newDoc: Record<string, any>, merged: Record<string, any>) {
+  const tagMap = new Map<string, any>();
+  [...arr<any>(oldDoc.tags), ...arr<any>(newDoc.tags)].forEach((t) => t?.name && tagMap.set(t.name, t));
+  if (tagMap.size) merged.tags = [...tagMap.values()];
+}
+
+function copyRemainingTopLevelKeys(newDoc: Record<string, any>, merged: Record<string, any>, handled: string[]) {
+  Object.keys(newDoc).forEach((k) => {
+    if (handled.includes(k)) return;
+    if (!(k in merged)) merged[k] = clone(newDoc[k]);
+  });
+}
+
+function mergeSwagger2(oldDoc: Record<string, any>, newDoc: Record<string, any>, warnings: string[]) {
   const merged = clone(oldDoc || {});
 
   if (newDoc.swagger) merged.swagger = newDoc.swagger;
@@ -121,24 +216,130 @@ function mergeSwagger(oldText: string, newText: string) {
   merged.responses = deepMerge(oldDoc.responses || {}, newDoc.responses || {});
   merged.securityDefinitions = deepMerge(oldDoc.securityDefinitions || {}, newDoc.securityDefinitions || {});
 
-  const tagMap = new Map<string, any>();
-  [...arr<any>(oldDoc.tags), ...arr<any>(newDoc.tags)].forEach((t) => t?.name && tagMap.set(t.name, t));
-  if (tagMap.size) merged.tags = [...tagMap.values()];
+  mergeTags(oldDoc, newDoc, merged);
+  copyRemainingTopLevelKeys(newDoc, merged, SWAGGER2_HANDLED_KEYS);
 
-  Object.keys(newDoc).forEach((k) => {
-    if (!(k in merged)) merged[k] = clone(newDoc[k]);
+  ["host", "basePath", "schemes"].forEach((k) => {
+    if (!(k in oldDoc) && k in newDoc) {
+      warnings.push(`Il documento base non definisce ${k}: la chiave resta assente nel merged e il valore del documento aggiornato non viene ereditato.`);
+    }
   });
 
-  return { oldDoc, mergedDoc: merged, mergedText: toYaml(merged) };
+  return merged;
 }
 
-function validateMerged(text: string) {
-  if (!text.trim()) return { valid: false, message: "Nessun contenuto merged da scaricare." };
-  const parsed = parseYaml(text);
-  if (parsed.swagger !== "2.0") return { valid: false, message: 'Il campo swagger deve essere "2.0".' };
-  if (!parsed.info) return { valid: false, message: "Sezione info mancante." };
-  if (!parsed.paths || !Object.keys(parsed.paths).length) return { valid: false, message: "Sezione paths mancante o vuota." };
-  return { valid: true, message: "Validazione completata con successo." };
+function mergeComponents(oldComponents: Record<string, any>, newComponents: Record<string, any>) {
+  const sections = [...new Set([...Object.keys(oldComponents), ...Object.keys(newComponents)])];
+  const ordered = [
+    ...OPENAPI3_COMPONENT_ORDER.filter((s) => sections.includes(s)),
+    ...sections.filter((s) => !OPENAPI3_COMPONENT_ORDER.includes(s)).sort(),
+  ];
+
+  const merged: Record<string, any> = {};
+  ordered.forEach((section) => {
+    const ov = oldComponents[section];
+    const nv = newComponents[section];
+    const bothObjects = ov && nv && typeof ov === "object" && typeof nv === "object" && !Array.isArray(ov) && !Array.isArray(nv);
+    merged[section] = bothObjects ? deepMerge(ov, nv) : clone(nv !== undefined ? nv : ov);
+  });
+  return merged;
+}
+
+function mergeOpenApi3(oldDoc: Record<string, any>, newDoc: Record<string, any>, warnings: string[]) {
+  const merged = clone(oldDoc || {});
+
+  if (newDoc.openapi) merged.openapi = clone(newDoc.openapi);
+  if (newDoc.info) merged.info = clone(newDoc.info);
+
+  // In OpenAPI 3.x i dati d'ambiente stanno in servers, non più in
+  // host/basePath/schemes: valgono quindi le stesse regole, servers
+  // appartiene esclusivamente al documento base.
+  if ("servers" in oldDoc) merged.servers = clone(oldDoc.servers); else delete merged.servers;
+
+  if (oldDoc.paths || newDoc.paths) merged.paths = deepMerge(oldDoc.paths || {}, newDoc.paths || {});
+  if (oldDoc.webhooks || newDoc.webhooks) merged.webhooks = deepMerge(oldDoc.webhooks || {}, newDoc.webhooks || {});
+  if (oldDoc.components || newDoc.components) merged.components = mergeComponents(oldDoc.components || {}, newDoc.components || {});
+
+  mergeTags(oldDoc, newDoc, merged);
+  copyRemainingTopLevelKeys(newDoc, merged, OPENAPI3_HANDLED_KEYS);
+
+  if (!("servers" in oldDoc) && "servers" in newDoc) {
+    warnings.push("Il documento base non definisce servers: la sezione resta assente nel merged e gli URL del documento aggiornato non vengono ereditati.");
+  }
+
+  const oldVersion = String(oldDoc.openapi || "").trim();
+  const newVersion = String(newDoc.openapi || "").trim();
+  if (oldVersion && newVersion && oldVersion.split(".").slice(0, 2).join(".") !== newVersion.split(".").slice(0, 2).join(".")) {
+    warnings.push(`Le due specifiche dichiarano versioni OpenAPI diverse (${oldVersion} e ${newVersion}): il merged adotta ${newVersion}, verifica che i contenuti del documento base siano compatibili.`);
+  }
+
+  return merged;
+}
+
+function mergeSwagger(oldText: string, newText: string) {
+  const oldDoc = parseYaml(oldText);
+  const newDoc = parseYaml(newText);
+  const oldFormat = detectFormat(oldDoc);
+  const newFormat = detectFormat(newDoc);
+
+  if (oldFormat !== "unknown" && newFormat !== "unknown" && oldFormat !== newFormat) {
+    throw new Error(
+      `Formati non compatibili: il file base è ${describeFormat(oldDoc, oldFormat)} mentre il file aggiornato è ${describeFormat(newDoc, newFormat)}. Il merge richiede due documenti dello stesso formato.`
+    );
+  }
+
+  const format: SpecFormat = oldFormat !== "unknown" ? oldFormat : newFormat;
+  const warnings: string[] = [];
+  const mergedDoc = format === "openapi3"
+    ? mergeOpenApi3(oldDoc, newDoc, warnings)
+    : mergeSwagger2(oldDoc, newDoc, warnings);
+
+  if (format === "unknown") {
+    warnings.push('Nessuno dei due documenti dichiara swagger: "2.0" o openapi: 3.x. Sono state applicate le regole di merge Swagger 2.0.');
+  }
+
+  return { oldDoc, mergedDoc, mergedText: toYaml(mergedDoc), format, warnings, brokenRefs: findBrokenRefs(mergedDoc) };
+}
+
+function validateMerged(text: string): ValidationResult {
+  if (!text.trim()) return { valid: false, message: "Nessun contenuto merged da scaricare.", warnings: [] };
+
+  let parsed: Record<string, any>;
+  try {
+    parsed = parseYaml(text);
+  } catch (e) {
+    return { valid: false, message: `YAML del merged non valido: ${(e as Error).message}`, warnings: [] };
+  }
+
+  const format = detectFormat(parsed);
+  if (format === "unknown") {
+    return { valid: false, message: 'Formato non riconosciuto: il documento deve dichiarare swagger: "2.0" oppure openapi: 3.x.', warnings: [] };
+  }
+  if (!parsed.info) return { valid: false, message: "Sezione info mancante.", warnings: [] };
+
+  const hasPaths = Boolean(parsed.paths && Object.keys(parsed.paths).length);
+  if (format === "swagger2" && !hasPaths) {
+    return { valid: false, message: "Sezione paths mancante o vuota.", warnings: [] };
+  }
+  if (format === "openapi3" && !hasPaths) {
+    const hasWebhooks = Boolean(parsed.webhooks && Object.keys(parsed.webhooks).length);
+    if (!(isOpenApi31(parsed) && hasWebhooks)) {
+      return {
+        valid: false,
+        message: isOpenApi31(parsed)
+          ? "Il documento OpenAPI 3.1 deve contenere almeno una path o un webhook."
+          : "Sezione paths mancante o vuota.",
+        warnings: [],
+      };
+    }
+  }
+
+  const brokenRefs = findBrokenRefs(parsed);
+  const warnings = brokenRefs.length
+    ? [`${brokenRefs.length} riferimento/i $ref non risolto/i nel merged: ${brokenRefs.slice(0, 5).join(", ")}${brokenRefs.length > 5 ? " …" : ""}`]
+    : [];
+
+  return { valid: true, message: `Validazione completata con successo (${describeFormat(parsed, format)}).`, warnings };
 }
 
 function download(content: string, filename: string, type = "text/plain;charset=utf-8") {
@@ -327,8 +528,11 @@ export default function SwaggerMergeUI() {
   const [mergedText, setMergedText] = useState("");
   const [message, setMessage] = useState("Incolla, carica o trascina due YAML. In alternativa converti un JSON in YAML e usalo nel merge.");
   const [status, setStatus] = useState<Status>("idle");
-  const [validation, setValidation] = useState<{ valid: boolean; message: string } | null>(null);
+  const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [apiChanges, setApiChanges] = useState<ApiChange[]>([]);
+  const [mergeFormat, setMergeFormat] = useState<SpecFormat | null>(null);
+  const [mergeWarnings, setMergeWarnings] = useState<string[]>([]);
+  const [brokenRefs, setBrokenRefs] = useState<string[]>([]);
 
   const [jsonName, setJsonName] = useState("");
   const [jsonText, setJsonText] = useState("");
@@ -353,11 +557,21 @@ export default function SwaggerMergeUI() {
       const result = mergeSwagger(oldText, newText);
       setMergedText(result.mergedText);
       setApiChanges(buildApiDiff(result.oldDoc, result.mergedDoc));
-      setMessage("Merge completato.");
+      setMergeFormat(result.format);
+      setMergeWarnings(result.warnings);
+      setBrokenRefs(result.brokenRefs);
+      setMessage(
+        result.format === "openapi3"
+          ? `Merge completato con le regole OpenAPI 3.x (servers dal documento base, components uniti sezione per sezione).`
+          : "Merge completato."
+      );
       setStatus("success");
     } catch (e) {
       setMessage(`Errore durante il merge: ${(e as Error).message}`);
       setApiChanges([]);
+      setMergeFormat(null);
+      setMergeWarnings([]);
+      setBrokenRefs([]);
       setStatus("error");
     }
   };
@@ -409,7 +623,11 @@ export default function SwaggerMergeUI() {
     }
     download(mergedText, "swagger-merged.yaml", "text/yaml;charset=utf-8");
     setStatus("success");
-    setMessage("File validato e scaricato correttamente.");
+    setMessage(
+      result.warnings.length
+        ? `File scaricato, ma con avvisi: ${result.warnings.join(" ")}`
+        : "File validato e scaricato correttamente."
+    );
   };
 
   const sync = (source: HTMLDivElement | null, target: HTMLDivElement | null) => {
@@ -434,8 +652,8 @@ export default function SwaggerMergeUI() {
           </div>
           <h1 className="text-3xl font-semibold tracking-tight">Swagger Merge Tool 3.0</h1>
           <p className="mt-2 max-w-4xl text-sm text-slate-600">
-            Unisci due Swagger 2.0, converti un input JSON in YAML per leggere rapidamente lo swagger ottenuto,
-            visualizza le differenze API e scarica un report Markdown.
+            Unisci due specifiche Swagger 2.0 oppure OpenAPI 3.x, converti un input JSON in YAML per leggere
+            rapidamente lo swagger ottenuto, visualizza le differenze API e scarica un report Markdown.
           </p>
         </div>
 
@@ -547,6 +765,11 @@ export default function SwaggerMergeUI() {
               <div className="flex flex-wrap gap-2">
                 <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">Aggiunte: {stats.added}</Badge>
                 <Badge className="border-rose-200 bg-rose-100 text-rose-800">Rimosse: {stats.removed}</Badge>
+                {mergeFormat && (
+                  <Badge className={mergeFormat === "openapi3" ? "border-violet-200 bg-violet-100 text-violet-800" : "border-slate-200 bg-slate-100 text-slate-800"}>
+                    {mergeFormat === "openapi3" ? "OpenAPI 3.x" : mergeFormat === "swagger2" ? "Swagger 2.0" : "Formato non dichiarato"}
+                  </Badge>
+                )}
                 {validation?.valid && <Badge className="border-sky-200 bg-sky-100 text-sky-800">Validato</Badge>}
               </div>
               <div className="flex flex-wrap gap-3">
@@ -561,7 +784,32 @@ export default function SwaggerMergeUI() {
                 {status === "success" ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-600" /> : <AlertCircle className="mt-0.5 h-4 w-4 text-amber-600" />}
                 <span>{message}</span>
               </div>
-              {validation && <div className={`rounded-2xl border p-3 text-sm ${validation.valid ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}>{validation.message}</div>}
+              {validation && (
+                <div className={`rounded-2xl border p-3 text-sm ${validation.valid ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}>
+                  {validation.message}
+                </div>
+              )}
+              {brokenRefs.length > 0 && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+                  <div className="font-medium">Riferimenti $ref non risolti: {brokenRefs.length}</div>
+                  <p className="mt-1 text-rose-800">
+                    Il documento merged contiene riferimenti che non puntano a nulla: di norma significa che sono
+                    state importate path senza gli schemi o i componenti a cui fanno riferimento.
+                  </p>
+                  <ul className="mt-2 list-disc space-y-0.5 pl-5 font-mono text-xs">
+                    {brokenRefs.slice(0, 8).map((r) => <li key={r}>{r}</li>)}
+                  </ul>
+                  {brokenRefs.length > 8 && <div className="mt-1 text-xs text-rose-700">…e altri {brokenRefs.length - 8}.</div>}
+                </div>
+              )}
+              {mergeWarnings.length > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <div className="font-medium">Avvisi sul merge</div>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                    {mergeWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </div>
+              )}
               <Textarea value={mergedText} onChange={(e) => setMergedText(e.target.value)} placeholder="Qui apparirà il risultato del merge" className="min-h-[160px] max-h-[200px] resize-y border-emerald-200 bg-emerald-50/40 font-mono text-xs" />
             </CardContent>
           </Card>

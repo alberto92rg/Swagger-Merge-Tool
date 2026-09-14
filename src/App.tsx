@@ -648,9 +648,9 @@ export default function SwaggerMergeUI() {
             <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-sky-100 to-violet-100 px-3 py-1 text-xs font-medium text-slate-700">
               <Sparkles className="h-3.5 w-3.5" /> Swagger Merge & Diff
             </div>
-            <Badge className="border-sky-200 bg-sky-100 text-sky-800">Versione 3.0</Badge>
+            <Badge className="border-sky-200 bg-sky-100 text-sky-800">Versione 4.0</Badge>
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight">Swagger Merge Tool 3.0</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Swagger Merge Tool 4.0</h1>
           <p className="mt-2 max-w-4xl text-sm text-slate-600">
             Unisci due specifiche Swagger 2.0 oppure OpenAPI 3.x, converti un input JSON in YAML per leggere
             rapidamente lo swagger ottenuto, visualizza le differenze API e scarica un report Markdown.
@@ -661,7 +661,7 @@ export default function SwaggerMergeUI() {
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <CardTitle className="flex items-center gap-2 text-lg"><Sparkles className="h-5 w-5 text-fuchsia-600" /> Nuova feature JSON → YAML</CardTitle>
+                <CardTitle className="flex items-center gap-2 text-lg"><Sparkles className="h-5 w-5 text-fuchsia-600" /> Convertitore JSON → YAML</CardTitle>
                 <p className="mt-1 text-sm text-slate-600">
                   Incolla o carica un JSON, convertilo in YAML e usalo direttamente come Swagger base o Swagger aggiornato.
                 </p>

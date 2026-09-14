@@ -1,16 +1,42 @@
-# Swagger Merge Tool 3.0
+# Swagger Merge Tool 4.0
 
 Swagger Merge Tool è un'applicazione desktop che permette di **unire due specifiche API** — **Swagger 2.0** oppure **OpenAPI 3.x** — analizzare le differenze tra le API e generare automaticamente una **specifica unificata e validata**.
 
-Dalla versione **3.0** il tool introduce anche una nuova funzionalità: un pannello dedicato che consente di **incollare o caricare un JSON**, convertirlo in **YAML** e usarlo direttamente come input per l'analisi o il merge dello Swagger.
+Il tool include anche un pannello dedicato che consente di **incollare o caricare un JSON**, convertirlo in **YAML** e usarlo direttamente come input per l'analisi o il merge.
 
 L'applicazione è sviluppata utilizzando **React, Vite ed Electron** e può essere eseguita sia in locale sia come **applicazione desktop**, oppure distribuita come **eseguibile standalone**.
 
 ---
 
+## Novità della versione 4.0
+
+La release **4.0** porta il merge a supportare davvero **OpenAPI 3.x**. Fino alla 3.0 il riconoscimento di OpenAPI era limitato al convertitore JSON → YAML: il merge conosceva solo le sezioni Swagger 2.0 e, con due documenti OpenAPI 3, scartava senza segnalarlo l'intera sezione `components` del documento aggiornato, producendo un risultato con `$ref` non risolti.
+
+**Merge OpenAPI 3.x**
+
+- riconoscimento automatico del formato dal campo `swagger` o `openapi` del documento base
+- `components` uniti sezione per sezione: `schemas`, `responses`, `parameters`, `examples`, `requestBodies`, `headers`, `securitySchemes`, `links`, `callbacks`, `pathItems`
+- `webhooks` uniti (OpenAPI 3.1)
+- `servers` trattato come dato d'ambiente e preso esclusivamente dal documento base, esattamente come `host`, `basePath` e `schemes` in Swagger 2.0
+- versione `openapi` presa dal documento aggiornato, con avviso quando le due specifiche dichiarano versioni diverse
+- nessuna sezione Swagger 2.0 vuota (`definitions`, `parameters`, `responses`, `securityDefinitions`) nell'output OpenAPI 3.x
+
+**Controlli e sicurezza del risultato**
+
+- il merge tra formati diversi (base Swagger 2.0 e aggiornato OpenAPI 3.x, o viceversa) viene **rifiutato** con un messaggio esplicito invece di produrre un documento ibrido
+- dopo ogni merge il tool verifica i `$ref` interni e **elenca quelli che non puntano a nulla**: è il sintomo tipico di una path importata senza gli schemi a cui fa riferimento
+- la validazione pre-download riconosce il formato: sblocca il download per OpenAPI 3.x e accetta i documenti 3.1 con soli `webhooks`
+- gli avvisi sul merge (servers assente nella base, versioni disallineate, formato non dichiarato) sono mostrati nell'interfaccia
+
+**Correzione sul percorso Swagger 2.0**
+
+`host`, `basePath` e `schemes` venivano reintrodotti dal documento aggiornato quando erano assenti nel documento base, in contrasto con la regola di progetto che li vuole appartenenti esclusivamente alla base. Un gateway senza `host` esplicito ereditava così l'host del documento di sviluppo. Ora restano assenti e l'interfaccia lo segnala.
+
+---
+
 ## Novità della versione 3.0
 
-La release **3.0** aggiunge la nuova feature:
+La release **3.0** aveva aggiunto la feature:
 
 - **JSON → YAML Converter** integrato nell'interfaccia
 - input JSON tramite **incolla diretta** o **upload file**
@@ -23,9 +49,9 @@ La release **3.0** aggiunge la nuova feature:
   - **OpenAPI 3.x**
 - download del file YAML generato
 
-Descrizione aggiornata visibile nell'interfaccia:
+Descrizione visibile oggi nell'interfaccia:
 
-> **Unisci due Swagger 2.0, visualizza le differenze API, converti JSON in YAML e scarica un report Markdown.**
+> **Unisci due specifiche Swagger 2.0 oppure OpenAPI 3.x, converti un input JSON in YAML per leggere rapidamente lo swagger ottenuto, visualizza le differenze API e scarica un report Markdown.**
 
 ---
 
@@ -171,9 +197,9 @@ Nel pannello **Swagger da aggiornare** caricare il file YAML originale.
 
 Nel pannello **Swagger aggiornato** caricare il file YAML aggiornato.
 
-### 3. In alternativa, usare la nuova feature JSON → YAML
+### 3. In alternativa, usare il convertitore JSON → YAML
 
-Nel nuovo pannello/card superiore è possibile:
+Nella card superiore è possibile:
 
 - incollare un documento JSON
 - caricare un file JSON
@@ -295,13 +321,13 @@ swagger-merge-tool
 
 ## Compatibilità
 
-La nuova feature è stata integrata mantenendo il progetto compatibile con il linguaggio e il framework già adottati:
+Le evoluzioni sono state integrate mantenendo il progetto compatibile con il linguaggio e il framework già adottati:
 
 - **React** per l'interfaccia
 - **Vite** per lo sviluppo e la build frontend
 - **Electron** per l'esecuzione desktop
 
-L'introduzione della conversione **JSON → YAML** non modifica il flusso principale del tool, ma lo estende con un passaggio opzionale e integrato nell'interfaccia.
+Il supporto a OpenAPI 3.x della 4.0 **non modifica le regole di merge di Swagger 2.0**: i documenti Swagger 2.0 seguono lo stesso percorso di prima, con la sola eccezione della correzione su `host`, `basePath` e `schemes` descritta nelle novità della release. L'elaborazione resta interamente locale: i documenti API non vengono inviati ad alcun servizio esterno.
 
 ---
 
@@ -332,5 +358,5 @@ npm run electron
 Versione applicativa aggiornata:
 
 ```text
-3.0.0
+4.0.0
 ```
